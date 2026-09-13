@@ -1,4 +1,8 @@
 {
+  "model": "LogisticRegression",
+  "dataset": "UCI Bank Marketing",
+  "n_train": 36168,
+  "n_test": 9043,
   "accuracy": 0.8461793652548932,
   "precision": 0.41937046004842615,
   "recall": 0.8185255198487713,
@@ -13,8 +17,23 @@
       866
     ]
   ],
-  "n_train": 36168,
-  "n_test": 9043,
-  "class_balance_train": 0.11698186241981863,
-  "class_balance_test": 0.11699657193409267
+  "numeric_features": [
+    "age",
+    "balance",
+    "duration",
+    "campaign",
+    "pdays",
+    "previous"
+  ],
+  "categorical_features": [
+    "job",
+    "marital",
+    "education",
+    "default",
+    "housing",
+    "loan",
+    "contact",
+    "month",
+    "poutcome"
+  ]
 }

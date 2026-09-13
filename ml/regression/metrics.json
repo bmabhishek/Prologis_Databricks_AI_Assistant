@@ -1,17 +1,29 @@
 {
-  "rmse": 0.510241559598114,
-  "mae": 0.33270070692031967,
-  "r2": 0.8013242785541608,
+  "model": "RandomForestRegressor",
+  "dataset": "California Housing",
   "n_train": 16512,
   "n_test": 4128,
+  "rmse": 0.510241559598114,
+  "mae": 0.3327007069203197,
+  "r2": 0.8013242785541608,
+  "feature_names": [
+    "MedInc",
+    "HouseAge",
+    "AveRooms",
+    "AveBedrms",
+    "Population",
+    "AveOccup",
+    "Latitude",
+    "Longitude"
+  ],
   "feature_importance": {
     "MedInc": 0.5420519803564836,
-    "HouseAge": 0.052256870772728295,
-    "AveRooms": 0.04067932749867089,
-    "AveBedrms": 0.025726637541340868,
-    "Population": 0.026598390395732432,
     "AveOccup": 0.13874943831034073,
     "Latitude": 0.08718399153020466,
-    "Longitude": 0.08675336359449856
+    "Longitude": 0.08675336359449856,
+    "HouseAge": 0.052256870772728295,
+    "AveRooms": 0.04067932749867089,
+    "Population": 0.026598390395732432,
+    "AveBedrms": 0.025726637541340868
   }
 }

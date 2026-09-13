@@ -53,7 +53,7 @@ def upload_to_s3(local_path: Path, s3_key: str) -> str:
 
 
 def deploy_model(model_data: str, source_dir: Path, endpoint_name: str,
-                 instance_type: str = "ml.t2.medium"):
+                 instance_type: str = "ml.m5.large"):
     print(f"  Deploying endpoint '{endpoint_name}' (this takes 5-8 min)...")
     # source_dir = local directory containing inference.py
     # entry_point = filename within source_dir
