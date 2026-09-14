@@ -4,7 +4,7 @@ End-to-end AI-powered Financial Assistant Web Application for **Prologis (NYSE: 
 
 Built as a multi-cloud system: Postgres on Supabase for structured data, AWS SageMaker for ML model hosting, **Google Cloud Vertex AI** for the conversational agent (with function calling, the primitive that underpins the Vertex AI Agent Development Kit), and AWS Bedrock (Claude Haiku) for summarization.
 
-**Live deployment:** [https://prologis-financial-assistant.streamlit.app/](https://prologis-financial-assistant.streamlit.app/)
+**Live deployment:** [https://prologis-financial-ai.streamlit.app/](https://prologis-financial-ai.streamlit.app/)
 
 ---
 
@@ -13,12 +13,12 @@ Built as a multi-cloud system: Postgres on Supabase for structured data, AWS Sag
 ```
                         ┌─────────────────────────────────────────────┐
                         │        Streamlit Web App (Frontend)         │
-                        │  💬 Chat   📊 Data Browser   🤖 ML Tab      │
+                        │  💬 Chat   📊 Data Browser   🤖 ML Tab       │
                         └──────┬──────────┬──────────────┬────────────┘
                                │          │              │
                 ┌──────────────┴──┐    ┌──┴──────┐   ┌───┴──────────────┐
                 │  Vertex AI      │    │ Postgres│   │ AWS SageMaker    │
-                │  Gemini 2.5     │    │ (props +│   │  • RF Regressor  │
+                │  Gemini 3.5     │    │ (props +│   │  • RF Regressor  │
                 │  + function     │    │ financs)│   │  • LR Classifier │
                 │  calling (ADK)  │    │         │   │                  │
                 └────┬───┬───┬────┘    └─────────┘   └──────────────────┘
@@ -33,10 +33,10 @@ Built as a multi-cloud system: Postgres on Supabase for structured data, AWS Sag
 ```
 
 **Cloud services used:**
-- **Google Cloud Vertex AI** — Gemini 2.5 Flash agent using function calling (the underlying primitive of the Vertex AI Agent Development Kit)
+- **Google Cloud Vertex AI** — Gemini 3.5 Flash agent using function calling (the underlying primitive of the Vertex AI Agent Development Kit). The model name is read from the `GEMINI_MODEL_NAME` environment variable (default `gemini-3.5-flash`), so it can be swapped without a code change as Google's model lineup evolves.
 - **AWS SageMaker** — hosted endpoints for the regression and classification models
 - **AWS Bedrock** — Claude Haiku 4.5 for press-release summarization (multi-cloud integration)
-- **Supabase Postgres** — properties + financials database
+- **Supabase Postgres** — properties + financials database, connected via Supabase's Session pooler (IPv4-compatible on the free tier; see Postgres setup below)
 - **Streamlit Community Cloud** — public web app hosting
 
 ---
@@ -56,7 +56,7 @@ The 20 sample properties span Los Angeles, Chicago, New York, Kansas City, Dalla
 ## Repository layout
 
 ```
-financial-assistant/
+Prologis_Financial_Assistant/
 ├── agent/
 │   ├── tools.py            # 3 tool functions exposed to the agent
 │   ├── bedrock.py          # AWS Bedrock summarization helper
@@ -106,8 +106,8 @@ financial-assistant/
 
 ```bash
 # Clone and enter the project
-git clone https://github.com/RahulNayak704/prologis-financial-assistant.git
-cd prologis-financial-assistant
+git clone https://github.com/bmabhishek/Prologis_Financial_Assistant.git
+cd Prologis_Financial_Assistant
 
 # Conda env with Python 3.9 to match SageMaker container
 conda create -n smpy39 python=3.9 -y
@@ -133,8 +133,9 @@ psql -h localhost -U postgres -d financial_assistant -f db/seed.sql
 **Supabase (deployed app):**
 1. Create a free Supabase project at https://supabase.com
 2. Open the SQL editor and run `db/schema.sql` then `db/seed.sql`
-3. Grab the connection string under Project Settings → Database → Connection string → Session pooler
-4. Use the host, port, db, user, password values in `.env`
+3. Grab the connection string under **Project Settings → Database → Connect → Direct** (or the **Connect** button on the project dashboard)
+4. Under Connection Method, use **Session pooler**, not Direct connection — Supabase's direct connection endpoint is IPv6-only by default, and a dedicated IPv4 address is a paid Pro Plan add-on. The Session pooler is IPv4-proxied for free and works from any hosting platform without extra configuration.
+5. Use the pooler's host, port, db, user, and password values in `.env` (the pooler username is formatted as `postgres.<project-ref>`, not plain `postgres`)
 
 Verify with `psql ... -c "SELECT COUNT(*) FROM properties;"` — should return `20`.
 
@@ -148,20 +149,26 @@ The chatbot routes through **Google Cloud Vertex AI** using the unified `google-
 4. Add to `.env`:
    ```
    GOOGLE_API_KEY=AIza...
-   GOOGLE_GENAI_USE_VERTEXAI=True
+   GOOGLE_GENAI_USE_VERTEXAI=False
+   GEMINI_MODEL_NAME=gemini-3.5-flash
    ```
+
+   Note: `GOOGLE_GENAI_USE_VERTEXAI` is set to `False` here because this project authenticates with a plain Gemini API key rather than a Vertex AI-scoped service account key. If your API key is specifically scoped to the Vertex AI / Agent Platform API, set this to `True` instead.
 
 ### Environment variables
 
 ```bash
 cp .env.example .env
 # Then edit .env to fill in your real values:
-#   GOOGLE_API_KEY            -- Vertex AI Express Mode key
-#   GOOGLE_GENAI_USE_VERTEXAI -- set to True
-#   POSTGRES_*                -- Supabase or local Postgres credentials
+#   GOOGLE_API_KEY            -- Gemini API key (Express Mode)
+#   GOOGLE_GENAI_USE_VERTEXAI -- True or False, see note above
+#   GEMINI_MODEL_NAME         -- e.g. gemini-3.5-flash; keep in sync with Google's current model lineup
+#   POSTGRES_*                -- Supabase (Session pooler) or local Postgres credentials
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
 #   SAGEMAKER_BUCKET, SAGEMAKER_ROLE_ARN
 ```
+
+If deploying to Streamlit Community Cloud, add the same variables under **Manage app → Settings → Secrets** in TOML format. Streamlit's `st.secrets` does not automatically populate `os.environ`, so `app/streamlit_app.py` bridges them explicitly on startup. After changing Secrets, use **Reboot app** rather than relying on the automatic redeploy, since a plain redeploy does not always pick up newly saved Secrets in the running process.
 
 ### SEC data
 
@@ -236,7 +243,7 @@ python scripts/deploy_sagemaker.py
 This script:
 1. Tarballs each `model.joblib` to S3
 2. Creates a SageMaker `SKLearnModel` for each, pointing to the local `inference.py` as `source_dir`
-3. Deploys to `ml.t2.medium` instances using the `1.2-1` sklearn framework container (Python 3.9, sklearn 1.2.x)
+3. Deploys to `ml.m5.large` instances using the `1.2-1` sklearn framework container (Python 3.9, sklearn 1.2.x) — note this replaces the older `ml.t2.medium` instance type, which AWS has since deprecated
 4. Auto-populates `SAGEMAKER_REGRESSION_ENDPOINT` and `SAGEMAKER_CLASSIFICATION_ENDPOINT` in `.env`
 
 Total deploy time: ~12 minutes for both endpoints.
@@ -252,7 +259,7 @@ python scripts/delete_endpoints.py
 
 ## Conversational agent
 
-The agent uses the **unified `google-genai` SDK** routed through **Google Cloud Vertex AI** in Express Mode. The agent declares four tool schemas; Gemini 2.5 Flash decides which tools to call and in what order. This is the same function-calling primitive that powers the Vertex AI Agent Development Kit.
+The agent uses the **unified `google-genai` SDK** routed through **Google Cloud Vertex AI Express Mode**. The agent declares four tool schemas; Gemini decides which tools to call and in what order. This is the same function-calling primitive that powers the Vertex AI Agent Development Kit. The active model is controlled by the `GEMINI_MODEL_NAME` environment variable (currently `gemini-3.5-flash`) rather than hardcoded, so it can be updated in one place — including the Streamlit sidebar display — as Google's model lineup changes.
 
 ### Tools available to the agent
 
@@ -306,12 +313,12 @@ The app has three tabs:
 
 | Cloud | Service | Component |
 |---|---|---|
-| **GCP** | Vertex AI (Gemini 2.5 Flash) | Conversational agent / function-calling orchestrator |
+| **GCP** | Vertex AI (Gemini 3.5 Flash) | Conversational agent / function-calling orchestrator |
 | **AWS** | SageMaker | Two hosted ML endpoints (regression + classification) |
 | **AWS** | Bedrock (Claude Haiku 4.5) | Press-release summarization |
 | **AWS** | S3 | Model artifact storage |
 | **AWS** | IAM | SageMaker execution role + CLI user |
-| **AWS** | Supabase (managed Postgres) | Properties + financials |
+| — | Supabase (managed Postgres) | Properties + financials |
 
 The cross-cloud design is functional, not just decorative: queries that need a press release summary call **Bedrock** (AWS), predictions go to **SageMaker** (AWS), agent reasoning happens in **Vertex AI** (GCP).
 
@@ -324,5 +331,7 @@ The cross-cloud design is functional, not just decorative: queries that need a p
 - The SageMaker container is constrained to sklearn 1.2.x and Python 3.9 (the latest version AWS publishes); the local training env mirrors these versions to keep pickle formats compatible
 - Vertex AI Express Mode is a 90-day free window; production deployment would switch to billing-enabled Vertex AI with service account authentication for Streamlit Cloud
 - Bedrock model availability is region-specific; the project uses the `us-east-1` cross-region inference profile for Claude Haiku 4.5
+- Supabase's free-tier projects auto-pause after a period of inactivity; if the Postgres connection starts failing after the project has sat idle, check the Supabase dashboard for a paused project before assuming a code or credentials issue
+- Google periodically deprecates older Gemini model versions ahead of announced shutdown dates; if the agent starts returning 404s, check `GEMINI_MODEL_NAME` against Google's currently supported model list
 
 <img width="462" height="644" alt="image" src="https://github.com/user-attachments/assets/2533353d-e3ee-47a6-8910-f0fa3428cbf7" />
