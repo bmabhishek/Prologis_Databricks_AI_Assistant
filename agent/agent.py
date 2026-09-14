@@ -45,7 +45,7 @@ os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY  # ensure SDK sees it
 
 # Vertex AI Express Mode client
 client = genai.Client(
-    vertexai=True,
+    vertexai=os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "True").lower() == "true",
     api_key=GOOGLE_API_KEY,
 )
 
@@ -78,7 +78,7 @@ clear natural-language answer with concrete numbers and facts. Use $ formatting
 for dollar values. Keep answers to 2-4 sentences unless the user wants detail.
 """
 
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.5-flash"
 
 
 def _build_config() -> types.GenerateContentConfig:
