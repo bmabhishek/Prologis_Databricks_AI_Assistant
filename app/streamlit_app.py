@@ -18,6 +18,10 @@ from sqlalchemy import create_engine
 
 load_dotenv()
 
+for _key, _value in st.secrets.items():
+    if _key not in os.environ:
+        os.environ[_key] = str(_value)
+
 st.set_page_config(
     page_title="Prologis Financial Assistant",
     page_icon="🏢",
