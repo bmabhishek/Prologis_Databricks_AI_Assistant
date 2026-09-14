@@ -258,8 +258,9 @@ with st.sidebar:
 """)
     st.divider()
     st.markdown("### ☁️ Cloud Services")
-    st.markdown("""
-- 🤖 **Vertex AI** — Gemini 2.5 Flash agent (function calling)
+    gemini_model_display = os.getenv("GEMINI_MODEL_NAME", "gemini-3.5-flash")
+    st.markdown(f"""
+- 🤖 **Vertex AI** — {gemini_model_display} agent (function calling)
 - 🔮 **AWS SageMaker** — ML model endpoints
 - 📝 **AWS Bedrock** — Claude Haiku summarization
 """)

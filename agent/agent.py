@@ -78,8 +78,7 @@ clear natural-language answer with concrete numbers and facts. Use $ formatting
 for dollar values. Keep answers to 2-4 sentences unless the user wants detail.
 """
 
-MODEL_NAME = "gemini-3.5-flash"
-
+MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-3.5-flash")
 
 def _build_config() -> types.GenerateContentConfig:
     """Build the Vertex AI generation config with tools + system instruction."""
