@@ -6,9 +6,9 @@ The same SDK powers Vertex AI Studio and the Agent Development Kit, so the
 agent pattern (tool declaration, function calling, multi-turn orchestration)
 is rubric-compliant for "Use GCP Vertex AI and the Agent Development Kit".
 
-Routes natural-language questions to one of three data-source tools
-(query_postgres, query_sec_edgar, query_press_releases) plus a Bedrock
-summarization tool, then synthesizes a natural-language answer.
+Routes natural-language questions to one of four data-source tools
+(query_postgres, query_databricks, query_sec_edgar, query_press_releases)
+plus a Bedrock summarization tool, then synthesizes a natural-language answer.
 """
 import os
 from typing import Any
@@ -17,7 +17,12 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from agent.tools import query_postgres, query_sec_edgar, query_press_releases
+from agent.tools import (
+    query_postgres,
+    query_databricks,
+    query_sec_edgar,
+    query_press_releases,
+)
 from agent.bedrock import summarize_with_bedrock
 
 load_dotenv()
@@ -54,6 +59,7 @@ client = genai.Client(
 # --------------------------------------------------------------
 TOOL_FUNCTIONS = {
     "query_postgres": query_postgres,
+    "query_databricks": query_databricks,
     "query_sec_edgar": query_sec_edgar,
     "query_press_releases": query_press_releases,
     "summarize_with_bedrock": summarize_with_bedrock,
@@ -62,14 +68,16 @@ TOOL_FUNCTIONS = {
 SYSTEM_INSTRUCTION = """You are a Financial Assistant for Prologis, a real estate
 investment trust focused on industrial logistics properties.
 
-You have access to four tools:
+You have access to five tools:
 1. query_postgres - look up properties + financials from a database
    (filter by metro_area, property_type, or min_revenue).
-2. query_sec_edgar - look up Prologis financial metrics (revenue, net_income,
+2. query_databricks - look up lease transactions from a Databricks SQL Warehouse
+   (filter by metro_area, tenant_industry, or min_annual_rent).
+3. query_sec_edgar - look up Prologis financial metrics (revenue, net_income,
    operating_expenses, total_assets, total_liabilities) from SEC filings.
-3. query_press_releases - search recent Prologis press releases by keywords
+4. query_press_releases - search recent Prologis press releases by keywords
    or category (earnings, acquisition, expansion, sustainability).
-4. summarize_with_bedrock - condense long text using AWS Bedrock (Claude Haiku).
+5. summarize_with_bedrock - condense long text using AWS Bedrock (Claude Haiku).
    Use this for press release summaries when the user wants brief output.
 
 Decide which tool(s) to call based on the user's question. Call multiple tools
@@ -93,6 +101,15 @@ def _build_config() -> types.GenerateContentConfig:
                         "metro_area": ("string", "Metro area to filter by, e.g. Chicago, Dallas, Phoenix."),
                         "property_type": ("string", "Property type: Industrial, Logistics, or Warehouse."),
                         "min_revenue": ("number", "Minimum annual revenue in USD."),
+                    },
+                ),
+                _func_decl(
+                    "query_databricks",
+                    "Look up lease transactions from the Databricks SQL Warehouse.",
+                    {
+                        "metro_area": ("string", "Metro area to filter by, e.g. Chicago, Dallas, Phoenix."),
+                        "tenant_industry": ("string", "Tenant industry to filter by, e.g. Retail, Logistics, E-commerce."),
+                        "min_annual_rent": ("number", "Minimum annual rent in USD."),
                     },
                 ),
                 _func_decl(
