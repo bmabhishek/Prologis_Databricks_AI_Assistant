@@ -1,0 +1,14 @@
+# Streamlit theme — the app's CSS paints a deep-navy background, so the base
+# theme must be dark or Streamlit's light-theme text colors render on top of it
+# and look muted. This makes the dark palette the default regardless of the
+# viewer's OS "system" appearance setting.
+[theme]
+base = "dark"
+primaryColor = "#818cf8"
+backgroundColor = "#0a0e1a"
+secondaryBackgroundColor = "#131a2e"
+textColor = "#e2e8f0"
+font = "sans serif"
+
+[server]
+headless = true

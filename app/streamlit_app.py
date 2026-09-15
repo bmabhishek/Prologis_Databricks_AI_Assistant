@@ -152,6 +152,92 @@ st.markdown("""
         max-width: 1280px;
     }
 
+    /* ---------------------------------------------------------------
+       Theme lock. The page background above is always dark, so text and
+       surface colors must not follow Streamlit's Light theme (which the
+       "Use system setting" option resolves to on a light OS). Pin them.
+       --------------------------------------------------------------- */
+    .stApp { color: #e2e8f0; color-scheme: dark; }
+
+    /* Body text, lists, captions, headings */
+    [data-testid="stMarkdownContainer"],
+    [data-testid="stMarkdownContainer"] p,
+    [data-testid="stMarkdownContainer"] li,
+    [data-testid="stChatMessageContent"] p { color: #e2e8f0; }
+    [data-testid="stCaptionContainer"],
+    [data-testid="stCaptionContainer"] p { color: #94a3b8 !important; }
+    [data-testid="stHeading"] h2, [data-testid="stHeading"] h3,
+    [data-testid="stHeading"] h4, [data-testid="stHeading"] h5,
+    [data-testid="stMarkdownContainer"] h2, [data-testid="stMarkdownContainer"] h3,
+    [data-testid="stMarkdownContainer"] h4, [data-testid="stMarkdownContainer"] h5 { color: #f0f9ff; }
+    [data-testid="stMarkdownContainer"] a { color: #67e8f9; }
+    [data-testid="stMarkdownContainer"] strong { color: #f0f9ff; }
+
+    /* Inline code + code blocks */
+    [data-testid="stMarkdownContainer"] code:not(pre code),
+    [data-testid="stCaptionContainer"] code:not(pre code) {
+        color: #67e8f9;
+        background: rgba(34, 211, 238, 0.08);
+        border: 1px solid rgba(34, 211, 238, 0.15);
+        border-radius: 6px;
+    }
+    [data-testid="stCode"] pre, [data-testid="stCode"] code, .stCodeBlock pre {
+        background: rgba(15, 23, 42, 0.85) !important;
+        color: #67e8f9 !important;
+    }
+    [data-testid="stCode"] { border: 1px solid rgba(34, 211, 238, 0.15); border-radius: 8px; }
+
+    /* Top header bar + toolbar icons (white in Light theme otherwise) */
+    [data-testid="stHeader"] { background: rgba(10, 14, 26, 0.92); }
+    [data-testid="stHeader"] button, [data-testid="stHeader"] a,
+    [data-testid="stHeader"] span, [data-testid="stHeader"] svg,
+    [data-testid="stSidebarCollapseButton"] button, [data-testid="stSidebarCollapseButton"] svg,
+    [data-testid="stSidebarCollapsedControl"] button, [data-testid="stSidebarCollapsedControl"] svg {
+        color: #cbd5e1 !important; fill: #cbd5e1 !important;
+    }
+
+    /* Expanders — the inner <details> carries the theme's background */
+    [data-testid="stExpander"] details,
+    [data-testid="stExpanderDetails"] { background: transparent !important; border-color: rgba(148, 163, 184, 0.1) !important; }
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] summary p,
+    [data-testid="stExpander"] summary span,
+    [data-testid="stExpander"] summary svg { color: #94a3b8 !important; fill: #94a3b8 !important; }
+    [data-testid="stExpander"] summary:hover,
+    [data-testid="stExpander"] summary:hover p { color: #e2e8f0 !important; }
+
+    /* Widget labels, radios, metrics, dividers, chat avatars */
+    [data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label,
+    .stRadio label p, .stSlider label, .stSelectbox label,
+    .stNumberInput label, .stMultiSelect label { color: #cbd5e1 !important; }
+    [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] p { color: #94a3b8 !important; }
+    hr { border-color: rgba(148, 163, 184, 0.15) !important; }
+    [data-testid="stChatMessageAvatarUser"],
+    [data-testid="stChatMessageAvatarAssistant"] { background: rgba(99, 102, 241, 0.25); color: #f0f9ff; }
+
+    /* Form inputs / selects (white boxes in Light theme otherwise) */
+    [data-testid="stForm"] { border-color: rgba(148, 163, 184, 0.12); }
+    .stSelectbox [data-baseweb="select"] > div,
+    .stMultiSelect [data-baseweb="select"] > div,
+    [data-testid="stNumberInputContainer"],
+    .stNumberInput input {
+        background: rgba(30, 41, 59, 0.6) !important;
+        border-color: rgba(129, 140, 248, 0.25) !important;
+        color: #f0f9ff !important;
+    }
+    .stSelectbox [data-baseweb="select"] span,
+    .stSelectbox [data-baseweb="select"] input,
+    .stMultiSelect [data-baseweb="select"] input,
+    .stSelectbox [data-baseweb="select"] svg,
+    .stMultiSelect [data-baseweb="select"] svg { color: #f0f9ff !important; fill: #cbd5e1 !important; }
+    .stMultiSelect [data-baseweb="tag"] { background: rgba(99, 102, 241, 0.35) !important; color: #f0f9ff !important; }
+    .stMultiSelect [data-baseweb="tag"] span { color: #f0f9ff !important; }
+
+    /* Buttons and tabs keep their own colors regardless of markdown rules */
+    .stButton button p, [data-testid="stFormSubmitButton"] button p,
+    .stTabs [data-baseweb="tab"] p { color: inherit !important; }
+
+
     /* Sidebar */
     [data-testid="stSidebar"] {
         background: linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0%, rgba(10, 14, 26, 0.98) 100%);
@@ -178,7 +264,8 @@ st.markdown("""
         letter-spacing: 0.1em;
         margin-bottom: 0.6rem;
     }
-    [data-testid="stSidebar"] li { color: #e2e8f0; font-size: 0.88rem; margin-bottom: 0.15rem; }
+    [data-testid="stSidebar"] li,
+    [data-testid="stSidebar"] p { color: #e2e8f0; font-size: 0.88rem; margin-bottom: 0.15rem; }
     [data-testid="stSidebar"] code {
         font-family: 'JetBrains Mono', monospace;
         font-size: 0.7rem;
@@ -188,9 +275,11 @@ st.markdown("""
         border-radius: 6px;
     }
 
-    /* Main heading gradient */
+    /* Main heading gradient (Streamlit >=1.36 has no `.main` class — use test ids) */
+    [data-testid="stMain"] h1, [data-testid="stMain"] h2, [data-testid="stMain"] h3,
+    [data-testid="stMain"] h4, [data-testid="stMain"] h5,
     .main h1, .main h2 { font-family: 'Space Grotesk', sans-serif; letter-spacing: -0.02em; }
-    .main h1 {
+    [data-testid="stMain"] h1, .main h1 {
         background: linear-gradient(135deg, #f0f9ff 0%, #a5b4fc 50%, #67e8f9 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
@@ -283,7 +372,14 @@ st.markdown("""
         transform: translateY(-1px);
     }
 
-    /* Form: text input on top */
+    /* Form: text input on top (style the baseweb wrapper too — it carries the theme bg) */
+    .stTextInput [data-baseweb="input"],
+    .stTextInput [data-baseweb="base-input"] {
+        background: rgba(30, 41, 59, 0.6) !important;
+        border-color: rgba(129, 140, 248, 0.25) !important;
+        border-radius: 12px !important;
+    }
+    .stTextInput input::placeholder { color: #64748b !important; }
     .stTextInput input {
         background: rgba(30, 41, 59, 0.6) !important;
         border: 1px solid rgba(129, 140, 248, 0.25) !important;
