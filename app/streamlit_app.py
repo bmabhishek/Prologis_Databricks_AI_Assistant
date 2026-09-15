@@ -2,8 +2,8 @@
 Financial Assistant Web Application - Streamlit Frontend
 Tabs: Chat | Data Browser | ML Predictions
 
-Powered by Vertex AI (Gemini) function calling, AWS SageMaker, AWS Bedrock,
-and Postgres on Supabase.
+Powered by Vertex AI (Gemini) function calling, Databricks SQL Warehouse,
+Postgres on Supabase, AWS SageMaker, and AWS Bedrock.
 """
 import sys
 from pathlib import Path
@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import os
 import json
+import html
+import traceback
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
@@ -18,9 +20,14 @@ from sqlalchemy import create_engine
 
 load_dotenv()
 
-for _key, _value in st.secrets.items():
-    if _key not in os.environ:
-        os.environ[_key] = str(_value)
+# Streamlit Cloud stores config in st.secrets, not os.environ — bridge them so
+# the agent/tool modules (which only read os.environ) see the same values.
+try:
+    for _key, _value in st.secrets.items():
+        if _key not in os.environ:
+            os.environ[_key] = str(_value)
+except Exception:
+    pass
 
 st.set_page_config(
     page_title="Prologis Financial Assistant",
@@ -28,6 +35,101 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+ROOT = Path(__file__).parent.parent
+SEC_PATH = ROOT / "data" / "sec" / "prologis_financials.json"
+PRESS_PATH = ROOT / "data" / "press_releases.json"
+
+GEMINI_MODEL = os.getenv("GEMINI_MODEL_NAME", "gemini-3.5-flash")
+DATABRICKS_HOST = os.getenv("DATABRICKS_SERVER_HOSTNAME", "")
+DATABRICKS_TABLE = "workspace.default.lease_transactions"
+GENIE_SPACE = "Commercial Lease Analytics"
+
+# --------------------------------------------------------------
+# Static metadata about the agent's tools / data sources.
+# Keep in sync with agent/agent.py TOOL_FUNCTIONS.
+# --------------------------------------------------------------
+TOOL_META = {
+    "query_databricks": {
+        "icon": "🧱", "label": "Databricks", "color": "#ff3621",
+        "service": "Serverless SQL Warehouse · Delta table",
+        "table": DATABRICKS_TABLE,
+        "records": "25 lease transactions · 11 metros · 6 tenant industries",
+        "ask": "tenants, rent per sq ft, annual rent, lease terms, lease types",
+        "args": "metro_area · tenant_industry · min_annual_rent",
+    },
+    "query_postgres": {
+        "icon": "🐘", "label": "Postgres", "color": "#3ecf8e",
+        "service": "Supabase · Session pooler",
+        "table": "properties ⋈ financials",
+        "records": "20 properties · 11 metros · Industrial / Logistics / Warehouse",
+        "ask": "property revenue, net income, expenses by metro or type",
+        "args": "metro_area · property_type · min_revenue",
+    },
+    "query_sec_edgar": {
+        "icon": "📑", "label": "SEC EDGAR", "color": "#60a5fa",
+        "service": "XBRL Company Facts API · cached JSON",
+        "table": "Prologis (NYSE: PLD) 10-K / 10-Q",
+        "records": "revenue · net income · opex · total assets · total liabilities",
+        "ask": "real, audited company-level financials (annual or quarterly)",
+        "args": "metric · period",
+    },
+    "query_press_releases": {
+        "icon": "📰", "label": "Press Releases", "color": "#fbbf24",
+        "service": "JSON store",
+        "table": "data/press_releases.json",
+        "records": "10 releases · earnings / acquisition / expansion / sustainability",
+        "ask": "announcements, deals, expansions, ESG updates",
+        "args": "keywords · category · limit",
+    },
+    "summarize_with_bedrock": {
+        "icon": "📝", "label": "AWS Bedrock", "color": "#f59e0b",
+        "service": "Claude Haiku 4.5 · us-east-1 inference profile",
+        "table": "summarization tool (no data of its own)",
+        "records": "condenses any tool output to N words",
+        "ask": "“summarize …”, “in 40 words”, “briefly”",
+        "args": "text · max_words",
+    },
+}
+
+# Clickable suggestions, grouped by the data source they exercise. Every group
+# is always visible in the Chat tab — not just before the first question.
+SUGGESTED_QUERIES = {
+    "🧱 Databricks · Leases": [
+        "Show me lease transactions in Chicago",
+        "What's the average rent per square foot for Cold Storage tenants?",
+        "Which leases have annual rent above $3M?",
+        "List E-commerce tenant leases with their lease terms and lease types",
+        "Compare total annual rent between Dallas and Los Angeles leases",
+        "Which 3PL tenants have the largest square footage?",
+    ],
+    "🐘 Postgres · Properties": [
+        "Show industrial properties in Chicago with revenue",
+        "Compare property revenues between Dallas and Phoenix",
+        "Which warehouse properties generate more than $5M in revenue?",
+        "Which metro has the highest average revenue per property?",
+        "List logistics properties in Los Angeles with net income",
+        "What is the total revenue across all Seattle properties?",
+    ],
+    "📑 SEC EDGAR · Financials": [
+        "What was Prologis' net income last year?",
+        "What were Prologis' revenue and operating expenses in the latest 10-K?",
+        "Show Prologis' total assets versus total liabilities",
+        "What was Prologis' revenue in the most recent quarter?",
+    ],
+    "📰 Press Releases + Bedrock": [
+        "Did Prologis announce any acquisitions recently?",
+        "Summarize the most recent earnings press release in 40 words",
+        "What sustainability initiatives has Prologis announced?",
+        "Briefly summarize recent expansion announcements",
+    ],
+    "🔀 Multi-source": [
+        "Compare Chicago property revenue in Postgres with Chicago lease rent in Databricks",
+        "How does total lease rent in Dallas compare to Dallas property revenue?",
+        "What was Prologis' net income last year, and what did the latest earnings release say? Keep it brief.",
+        "Which metros appear in both the property database and the lease transactions?",
+    ],
+}
 
 # --------------------------------------------------------------
 # Custom CSS — futuristic, glassy, professional
@@ -40,7 +142,7 @@ st.markdown("""
     .stApp {
         background:
             radial-gradient(circle at 20% 0%, rgba(99, 102, 241, 0.08) 0%, transparent 50%),
-            radial-gradient(circle at 80% 100%, rgba(34, 211, 238, 0.06) 0%, transparent 50%),
+            radial-gradient(circle at 80% 100%, rgba(255, 54, 33, 0.05) 0%, transparent 50%),
             #0a0e1a;
     }
 
@@ -76,7 +178,7 @@ st.markdown("""
         letter-spacing: 0.1em;
         margin-bottom: 0.6rem;
     }
-    [data-testid="stSidebar"] li { color: #e2e8f0; font-size: 0.9rem; }
+    [data-testid="stSidebar"] li { color: #e2e8f0; font-size: 0.88rem; margin-bottom: 0.15rem; }
     [data-testid="stSidebar"] code {
         font-family: 'JetBrains Mono', monospace;
         font-size: 0.7rem;
@@ -131,8 +233,11 @@ st.markdown("""
         margin-bottom: 10px;
     }
 
-    /* Buttons */
-    .stButton button {
+    /* Primary buttons (Ask / Predict) — gradient */
+    .stButton button[kind="primary"],
+    .stButton [data-testid="baseButton-primary"],
+    .stButton [data-testid="stBaseButton-primary"],
+    [data-testid="stFormSubmitButton"] button {
         background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #06b6d4 100%);
         background-size: 200% 200%;
         color: white;
@@ -145,10 +250,37 @@ st.markdown("""
         box-shadow: 0 4px 20px rgba(99, 102, 241, 0.25);
         transition: all 0.2s ease;
     }
-    .stButton button:hover {
+    .stButton button[kind="primary"]:hover,
+    .stButton [data-testid="baseButton-primary"]:hover,
+    .stButton [data-testid="stBaseButton-primary"]:hover,
+    [data-testid="stFormSubmitButton"] button:hover {
         transform: translateY(-1px);
         box-shadow: 0 6px 28px rgba(99, 102, 241, 0.4);
         background-position: 100% 0%;
+    }
+
+    /* Secondary buttons (clickable suggested queries) — quiet glass chips */
+    .stButton button[kind="secondary"],
+    .stButton [data-testid="baseButton-secondary"],
+    .stButton [data-testid="stBaseButton-secondary"] {
+        background: rgba(30, 41, 59, 0.55);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 10px;
+        color: #cbd5e1;
+        font-weight: 400;
+        font-size: 0.86rem;
+        text-align: left;
+        justify-content: flex-start;
+        padding: 0.5rem 0.9rem;
+        min-height: 2.6rem;
+        transition: all 0.15s ease;
+    }
+    .stButton button[kind="secondary"] p { text-align: left; }
+    .stButton button[kind="secondary"]:hover {
+        background: rgba(99, 102, 241, 0.16);
+        border-color: rgba(129, 140, 248, 0.45);
+        color: #f0f9ff;
+        transform: translateY(-1px);
     }
 
     /* Form: text input on top */
@@ -164,6 +296,10 @@ st.markdown("""
         border-color: rgba(34, 211, 238, 0.5) !important;
         box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.15) !important;
     }
+
+    /* Horizontal radio (suggestion group picker) */
+    .stRadio [role="radiogroup"] { gap: 0.4rem 1.1rem; flex-wrap: wrap; }
+    .stRadio label { color: #cbd5e1; font-size: 0.86rem; }
 
     /* Metric cards */
     [data-testid="stMetric"] {
@@ -198,16 +334,65 @@ st.markdown("""
 
     code, pre { font-family: 'JetBrains Mono', monospace !important; }
 
-    /* Newest message highlight */
-    .latest-card {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(34, 211, 238, 0.08) 100%);
-        backdrop-filter: blur(12px);
-        border: 1px solid rgba(129, 140, 248, 0.3);
-        border-radius: 14px;
-        padding: 16px 20px;
-        margin-bottom: 12px;
-        box-shadow: 0 0 24px rgba(99, 102, 241, 0.1);
+    /* ---- Architecture / data-source cards ---- */
+    .flow {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem;
+        font-family: 'JetBrains Mono', monospace; font-size: 0.74rem;
+        color: #94a3b8; margin: 0.2rem 0 0.9rem 0;
     }
+    .flow .node {
+        background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 8px; padding: 0.28rem 0.6rem; color: #e2e8f0; white-space: nowrap;
+    }
+    .flow .node.brain {
+        border-color: rgba(129, 140, 248, 0.5);
+        background: linear-gradient(135deg, rgba(99, 102, 241, 0.25) 0%, rgba(34, 211, 238, 0.15) 100%);
+        color: #f0f9ff;
+    }
+    .flow .arrow { color: #64748b; }
+
+    .src-grid {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+        gap: 0.7rem; margin-bottom: 0.4rem;
+    }
+    .src-card {
+        background: rgba(30, 41, 59, 0.45); backdrop-filter: blur(8px);
+        border: 1px solid rgba(148, 163, 184, 0.12); border-left: 3px solid var(--c);
+        border-radius: 12px; padding: 0.8rem 0.95rem; min-height: 100%;
+    }
+    .src-card .name { font-family: 'Space Grotesk', sans-serif; font-weight: 600; color: #f0f9ff; font-size: 0.98rem; }
+    .src-card .svc { color: #94a3b8; font-size: 0.74rem; margin-top: 0.1rem; }
+    .src-card .tbl {
+        font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; color: var(--c);
+        margin-top: 0.45rem; word-break: break-all;
+    }
+    .src-card .rec { color: #cbd5e1; font-size: 0.78rem; margin-top: 0.4rem; line-height: 1.35; }
+    .src-card .ask { color: #94a3b8; font-size: 0.74rem; margin-top: 0.45rem; font-style: italic; line-height: 1.35; }
+    .src-card .ask b { color: #cbd5e1; font-style: normal; }
+
+    .genie {
+        margin-top: 0.7rem; padding: 0.7rem 0.95rem; border-radius: 12px;
+        background: linear-gradient(135deg, rgba(255, 54, 33, 0.10) 0%, rgba(30, 41, 59, 0.45) 100%);
+        border: 1px solid rgba(255, 54, 33, 0.25); font-size: 0.8rem; color: #cbd5e1; line-height: 1.45;
+    }
+    .genie b { color: #f0f9ff; }
+    .genie code { font-size: 0.72rem; color: #fca5a5; background: rgba(255, 54, 33, 0.1); border-radius: 5px; padding: 0 0.3rem; }
+
+    /* ---- Source chips shown on each answer ---- */
+    .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.15rem 0 0.55rem 0; }
+    .chip {
+        display: inline-flex; align-items: center; gap: 0.3rem;
+        font-family: 'JetBrains Mono', monospace; font-size: 0.68rem;
+        color: var(--c); background: rgba(255,255,255,0.03);
+        border: 1px solid var(--c); border-radius: 999px; padding: 0.15rem 0.6rem;
+        opacity: 0.9;
+    }
+
+    /* ---- Sidebar connection status ---- */
+    .status { display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem 0.6rem; font-size: 0.8rem; color: #cbd5e1; }
+    .status .ok::before  { content: "●"; color: #34d399; margin-right: 0.4rem; }
+    .status .off::before { content: "○"; color: #64748b; margin-right: 0.4rem; }
+    .status .off { color: #64748b; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -222,6 +407,32 @@ def get_db_engine():
     port = os.getenv("POSTGRES_PORT", "5432")
     db = os.getenv("POSTGRES_DB", "financial_assistant")
     return create_engine(f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{db}")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_properties() -> pd.DataFrame:
+    sql = """
+        SELECT p.property_id, p.address, p.metro_area, p.sq_footage,
+               p.property_type, f.revenue, f.net_income, f.expenses
+        FROM properties p
+        LEFT JOIN financials f ON p.property_id = f.property_id
+        ORDER BY p.property_id
+    """
+    return pd.read_sql(sql, get_db_engine())
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_lease_transactions() -> pd.DataFrame:
+    """Pull the full Databricks lease table via the same tool the agent uses."""
+    from agent.tools import query_databricks
+    result = query_databricks(limit=200)
+    return pd.DataFrame(result.get("records", []))
+
+
+@st.cache_data(show_spinner=False)
+def load_json(path_str: str):
+    p = Path(path_str)
+    return json.loads(p.read_text()) if p.exists() else None
 
 
 def invoke_sagemaker(endpoint_name, payload):
@@ -243,40 +454,127 @@ def safe_md(text):
     return text.replace("$", "\\$")
 
 
+def env_set(*names) -> bool:
+    return all(os.getenv(n) for n in names)
+
+
+def source_chip(tool_name: str) -> str:
+    m = TOOL_META.get(tool_name, {"icon": "🔧", "label": tool_name, "color": "#94a3b8"})
+    return (f'<span class="chip" style="--c:{m["color"]}">{m["icon"]} '
+            f'{html.escape(m["label"])} · {html.escape(tool_name)}</span>')
+
+
+def render_tool_result(result):
+    """Show a tool's return value in the most readable form available."""
+    if isinstance(result, str):
+        st.markdown(safe_md(result))
+        return
+    if not isinstance(result, dict):
+        st.json(result, expanded=False)
+        return
+    if "error" in result:
+        st.error(result["error"])
+        return
+    rows = result.get("records") or result.get("properties") or result.get("results")
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        if result.get("summary"):
+            st.json(result["summary"], expanded=False)
+        return
+    if "releases" in result:
+        for r in result["releases"]:
+            st.markdown(f"- **{r.get('date', '')}** · `{r.get('category', '')}` — {safe_md(r.get('title', ''))}")
+        return
+    st.json(result, expanded=False)
+
+
+def run_query(prompt: str):
+    """Send a question to the Vertex AI agent and prepend the exchange."""
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return
+    try:
+        from agent.agent import run_agent
+        with st.spinner("Routing through Vertex AI Gemini…"):
+            result = run_agent(prompt)
+        st.session_state.messages.insert(0, {
+            "user": prompt,
+            "assistant": result["answer"],
+            "tool_calls": result["tool_calls"],
+        })
+    except Exception as e:
+        st.session_state.messages.insert(0, {
+            "user": prompt,
+            "assistant": f"⚠️ Agent error: {e}",
+            "tool_calls": [],
+            "traceback": traceback.format_exc(),
+        })
+    st.session_state.input_counter += 1
+    st.rerun()
+
+
 # --------------------------------------------------------------
 # Sidebar
 # --------------------------------------------------------------
 with st.sidebar:
     st.title("🏢 Prologis FinAssist")
-    st.caption("AI-powered financial & property insights for an industrial REIT")
+    st.caption("AI-powered financial, property & lease insights for an industrial REIT — Databricks edition")
+
     st.divider()
     st.markdown("### 📂 Data Sources")
-    st.markdown("""
-- **SEC EDGAR** — 10-K / 10-Q filings
-- **Postgres** — properties + financials
-- **Press Releases** — JSON store
+    st.markdown(f"""
+- 🧱 **Databricks** — `lease_transactions` (Delta, SQL Warehouse)
+- 🐘 **Postgres** — `properties` + `financials` (Supabase)
+- 📑 **SEC EDGAR** — 10-K / 10-Q company facts
+- 📰 **Press Releases** — JSON store
 """)
+
     st.divider()
     st.markdown("### ☁️ Cloud Services")
-    gemini_model_display = os.getenv("GEMINI_MODEL_NAME", "gemini-3.5-flash")
     st.markdown(f"""
-- 🤖 **Vertex AI** — {gemini_model_display} agent (function calling)
-- 🔮 **AWS SageMaker** — ML model endpoints
-- 📝 **AWS Bedrock** — Claude Haiku summarization
+- 🤖 **Vertex AI** — `{GEMINI_MODEL}` agent (function calling)
+- 🧱 **Databricks** — Serverless SQL Warehouse + Genie
+- 🔮 **AWS SageMaker** — 2 hosted ML endpoints
+- 📝 **AWS Bedrock** — Claude Haiku 4.5 summarization
+- 🐘 **Supabase** — managed Postgres
 """)
+
+    st.divider()
+    st.markdown("### 🔌 Connections")
+    st.caption("Credentials present in this deployment")
+    statuses = [
+        ("Vertex AI", env_set("GOOGLE_API_KEY") or env_set("GEMINI_API_KEY")),
+        ("Databricks", env_set("DATABRICKS_SERVER_HOSTNAME", "DATABRICKS_HTTP_PATH", "DATABRICKS_ACCESS_TOKEN")),
+        ("Postgres", env_set("POSTGRES_HOST", "POSTGRES_PASSWORD")),
+        ("AWS", env_set("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")),
+        ("SageMaker reg", env_set("SAGEMAKER_REGRESSION_ENDPOINT")),
+        ("SageMaker clf", env_set("SAGEMAKER_CLASSIFICATION_ENDPOINT")),
+    ]
+    st.markdown(
+        '<div class="status">' +
+        "".join(f'<span class="{"ok" if ok else "off"}">{name}</span>' for name, ok in statuses) +
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
     st.divider()
     st.markdown("### 🚀 ML Endpoints")
     reg_ep = os.getenv("SAGEMAKER_REGRESSION_ENDPOINT", "(not deployed)")
     clf_ep = os.getenv("SAGEMAKER_CLASSIFICATION_ENDPOINT", "(not deployed)")
     st.code(f"reg: {reg_ep}\nclf: {clf_ep}", language=None)
+
     st.divider()
-    st.caption("Multi-cloud AI assignment · GCP + AWS")
+    st.caption("Multi-cloud AI assignment · GCP + Databricks + AWS")
 
 # --------------------------------------------------------------
 # Main header
 # --------------------------------------------------------------
 st.title("🏢 Prologis Financial Assistant")
-st.caption("End-to-end AI system: structured data + classic ML + generative AI on Postgres, AWS SageMaker, AWS Bedrock, and Google Vertex AI.")
+st.caption(
+    "End-to-end multi-cloud AI system: Vertex AI Gemini agent routing across "
+    "Databricks (leases), Postgres (properties), SEC EDGAR (filings) and press releases — "
+    "with AWS Bedrock summarization and AWS SageMaker ML endpoints."
+)
 
 # --------------------------------------------------------------
 # Tabs
@@ -287,127 +585,153 @@ tab_chat, tab_data, tab_ml = st.tabs(["💬 Chat", "📊 Data", "🤖 ML Predict
 # TAB 1: CHAT — newest-on-top, input pinned at top
 # ============================================================
 with tab_chat:
-    st.subheader("Conversational Assistant")
-    st.caption("Ask about financials, properties, or recent press releases. Powered by Vertex AI Gemini function calling — automatically routes your question across Postgres, SEC EDGAR, press releases, and AWS Bedrock.")
-
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "input_counter" not in st.session_state:
         st.session_state.input_counter = 0
 
-    # Input form at the top — using a form so Enter submits
+    st.subheader("Conversational Assistant")
+    st.caption(
+        f"Ask about leases, properties, financials, or press releases. Vertex AI **{GEMINI_MODEL}** "
+        "reads your question, picks the right tool(s) via function calling, and composes an answer "
+        "grounded in the returned data."
+    )
+
+    # ---- Architecture & data-source overview ----
+    with st.expander("🧭 How it works — architecture & data sources",
+                     expanded=not st.session_state.messages):
+        st.markdown(
+            '<div class="flow">'
+            '<span class="node">💬 your question</span><span class="arrow">→</span>'
+            f'<span class="node brain">🤖 Vertex AI · {html.escape(GEMINI_MODEL)} · function calling</span>'
+            '<span class="arrow">→</span><span class="node">🔧 up to 6 tool-calling turns</span>'
+            '<span class="arrow">→</span><span class="node">🧱 🐘 📑 📰 📝 tools</span>'
+            '<span class="arrow">→</span><span class="node">✍️ grounded answer</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        cards = []
+        for tool, m in TOOL_META.items():
+            cards.append(
+                f'<div class="src-card" style="--c:{m["color"]}">'
+                f'<div class="name">{m["icon"]} {html.escape(m["label"])}</div>'
+                f'<div class="svc">{html.escape(m["service"])}</div>'
+                f'<div class="tbl">{html.escape(tool)}<br/>{html.escape(m["table"])}</div>'
+                f'<div class="rec">{html.escape(m["records"])}</div>'
+                f'<div class="ask"><b>Ask about:</b> {html.escape(m["ask"])}<br/>'
+                f'<b>Filters:</b> {html.escape(m["args"])}</div>'
+                f'</div>'
+            )
+        st.markdown('<div class="src-grid">' + "".join(cards) + "</div>", unsafe_allow_html=True)
+
+        genie_link = (f'<a href="https://{html.escape(DATABRICKS_HOST)}" target="_blank" '
+                      f'style="color:#fca5a5">{html.escape(DATABRICKS_HOST)}</a>'
+                      if DATABRICKS_HOST else "your Databricks workspace")
+        st.markdown(
+            f'<div class="genie">🧞 <b>Databricks Genie — “{GENIE_SPACE}”</b> · '
+            f'The same <code>{DATABRICKS_TABLE}</code> table also has a Genie space in {genie_link}, '
+            f'so anyone with workspace access can ask plain-English questions and get generated SQL, '
+            f'a chart and a written summary — Databricks-native text-to-SQL alongside the custom '
+            f'<code>query_databricks</code> tool used here. Verified Genie prompts: '
+            f'<i>“What are the counts of leases by lease type?”</i>, '
+            f'<i>“What is the distribution of lease terms in months?”</i>, '
+            f'<i>“What is the monthly count of lease starts?”</i></div>',
+            unsafe_allow_html=True,
+        )
+
+    # ---- Input form at the top — using a form so Enter submits ----
     with st.form(key=f"chat_form_{st.session_state.input_counter}", clear_on_submit=True):
         col_input, col_submit = st.columns([6, 1])
         with col_input:
             user_input = st.text_input(
                 "Ask a question",
-                placeholder="Ask a question about Prologis...",
+                placeholder="Ask about leases, properties, financials, or press releases…",
                 label_visibility="collapsed",
             )
         with col_submit:
-            submitted = st.form_submit_button("Ask 🚀", use_container_width=True)
+            submitted = st.form_submit_button("Ask 🚀", use_container_width=True, type="primary")
 
-    if st.session_state.messages:
-        if st.button("🗑️ Clear chat", key="clear_chat"):
-            st.session_state.messages = []
-            st.rerun()
-
-    # Process new message
     if submitted and user_input.strip():
-        prompt = user_input.strip()
-        try:
-            from agent.agent import run_agent
-            with st.spinner("Thinking..."):
-                result = run_agent(prompt)
-            # Insert at the FRONT so newest renders on top
-            st.session_state.messages.insert(0, {
-                "user": prompt,
-                "assistant": result["answer"],
-                "tool_calls": result["tool_calls"],
-            })
-        except Exception as e:
-            import traceback
-            st.session_state.messages.insert(0, {
-                "user": prompt,
-                "assistant": f"⚠️ Agent error: {e}",
-                "tool_calls": [],
-                "traceback": traceback.format_exc(),
-            })
-        st.session_state.input_counter += 1
-        st.rerun()
+        run_query(user_input)
 
-    # Example queries (only when no messages yet)
-    if not st.session_state.messages:
-        with st.expander("💡 Example queries", expanded=True):
-            cols = st.columns(2)
-            examples = [
-                "What was Prologis' net income last year?",
-                "Show industrial properties in Chicago with revenue.",
-                "Did Prologis announce any acquisitions recently?",
-                "Summarize the most recent earnings press release.",
-                "Compare property revenues between Dallas and Phoenix.",
-                "Which metro has the highest average revenue per property?",
-            ]
-            for i, ex in enumerate(examples):
-                with cols[i % 2]:
-                    st.markdown(f"- _{ex}_")
+    # ---- Suggested queries — always visible, click to run ----
+    st.markdown("##### 💡 Suggested queries — click one to run it")
+    group = st.radio(
+        "Suggestion group",
+        options=list(SUGGESTED_QUERIES.keys()),
+        horizontal=True,
+        label_visibility="collapsed",
+        key="suggestion_group",
+    )
+    sug_cols = st.columns(2)
+    for i, q in enumerate(SUGGESTED_QUERIES[group]):
+        with sug_cols[i % 2]:
+            if st.button(q, key=f"sug_{group}_{i}", use_container_width=True, type="secondary"):
+                run_query(q)
 
-    # Render messages — newest first (already inserted at front)
+    # ---- Conversation (newest first) ----
+    if st.session_state.messages:
+        st.divider()
+        hdr_col, clr_col = st.columns([5, 1])
+        with hdr_col:
+            st.markdown(f"##### 🗂️ Conversation · {len(st.session_state.messages)} exchange(s) — newest first")
+        with clr_col:
+            if st.button("🗑️ Clear chat", key="clear_chat", use_container_width=True, type="secondary"):
+                st.session_state.messages = []
+                st.rerun()
+
     for idx, msg in enumerate(st.session_state.messages):
-        # Highlight only the most recent (idx == 0)
-        is_latest = (idx == 0)
-        wrapper_class = "latest-card" if is_latest else ""
-        if is_latest:
-            st.markdown('<div class="latest-card">', unsafe_allow_html=True)
-
         with st.chat_message("user"):
             st.markdown(safe_md(msg["user"]))
         with st.chat_message("assistant"):
+            calls = msg.get("tool_calls") or []
+            if calls:
+                st.markdown('<div class="chips">' + "".join(source_chip(c["name"]) for c in calls) + "</div>",
+                            unsafe_allow_html=True)
             st.markdown(safe_md(msg["assistant"]))
-            if msg.get("tool_calls"):
-                with st.expander(f"🔧 {len(msg['tool_calls'])} tool call(s)"):
-                    for c in msg["tool_calls"]:
-                        st.markdown(f"**`{c['name']}`**(`{c['args']}`)")
-                        st.json(c["result"], expanded=False)
+            if calls:
+                with st.expander(f"🔧 {len(calls)} tool call(s) — what the agent fetched"):
+                    for c in calls:
+                        m = TOOL_META.get(c["name"], {"icon": "🔧", "label": c["name"]})
+                        st.markdown(f"**{m['icon']} {m['label']}** — `{c['name']}({c['args']})`")
+                        render_tool_result(c["result"])
+                        st.markdown("")
             if msg.get("traceback"):
                 with st.expander("Traceback"):
                     st.code(msg["traceback"])
-
-        if is_latest:
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        if not is_latest:
-            st.markdown("<hr style='border-color: rgba(148,163,184,0.08); margin: 0.5rem 0;'/>", unsafe_allow_html=True)
+        if idx < len(st.session_state.messages) - 1:
+            st.markdown("<hr style='border-color: rgba(148,163,184,0.08); margin: 0.5rem 0;'/>",
+                        unsafe_allow_html=True)
 
 # ============================================================
 # TAB 2: DATA BROWSER
 # ============================================================
 with tab_data:
     st.subheader("Data Browser")
-    sub1, sub2, sub3 = st.tabs(["🏢 Properties", "📑 SEC Filings", "📰 Press Releases"])
+    st.caption("Browse every source the agent can query — the same tables and files the tools read.")
+    sub_pg, sub_dbx, sub_sec, sub_pr = st.tabs([
+        "🐘 Properties (Postgres)", "🧱 Lease Transactions (Databricks)",
+        "📑 SEC Filings", "📰 Press Releases",
+    ])
 
-    with sub1:
-        st.markdown("#### Properties & Financials (Postgres)")
+    with sub_pg:
+        st.markdown("#### Properties & Financials (Postgres on Supabase)")
+        st.caption("`properties ⋈ financials` — 20 synthetic properties across 11 US metros. Queried by `query_postgres`.")
         try:
-            engine = get_db_engine()
-            sql = """
-                SELECT p.property_id, p.address, p.metro_area, p.sq_footage,
-                       p.property_type, f.revenue, f.net_income, f.expenses
-                FROM properties p
-                LEFT JOIN financials f ON p.property_id = f.property_id
-                ORDER BY p.property_id
-            """
-            df = pd.read_sql(sql, engine)
+            with st.spinner("Querying Postgres…"):
+                df = load_properties()
             col1, col2 = st.columns(2)
             with col1:
                 metro_filter = st.multiselect(
                     "Filter by metro",
                     options=sorted(df["metro_area"].unique()),
+                    key="pg_metro",
                 )
             with col2:
                 type_filter = st.multiselect(
                     "Filter by type",
                     options=sorted(df["property_type"].unique()),
+                    key="pg_type",
                 )
             view = df.copy()
             if metro_filter:
@@ -423,19 +747,62 @@ with tab_data:
         except Exception as e:
             st.error(f"DB connection failed: {e}")
 
-    with sub2:
+    with sub_dbx:
+        st.markdown("#### Lease Transactions (Databricks SQL Warehouse)")
+        st.caption(f"`{DATABRICKS_TABLE}` — Delta table on a Serverless SQL Warehouse. Queried by `query_databricks` "
+                   f"and by the **{GENIE_SPACE}** Genie space.")
+        try:
+            with st.spinner("Querying Databricks SQL Warehouse…"):
+                leases = load_lease_transactions()
+            if leases.empty:
+                st.warning("The lease_transactions table returned no rows.")
+            else:
+                f1, f2, f3 = st.columns(3)
+                with f1:
+                    dbx_metro = st.multiselect("Filter by metro", sorted(leases["metro_area"].unique()), key="dbx_metro")
+                with f2:
+                    dbx_ind = st.multiselect("Filter by tenant industry", sorted(leases["tenant_industry"].unique()), key="dbx_ind")
+                with f3:
+                    dbx_type = st.multiselect("Filter by lease type", sorted(leases["lease_type"].unique()), key="dbx_type")
+                lv = leases.copy()
+                if dbx_metro:
+                    lv = lv[lv["metro_area"].isin(dbx_metro)]
+                if dbx_ind:
+                    lv = lv[lv["tenant_industry"].isin(dbx_ind)]
+                if dbx_type:
+                    lv = lv[lv["lease_type"].isin(dbx_type)]
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("Leases", len(lv))
+                k2.metric("Total annual rent", f"${lv['annual_rent'].sum()/1e6:.1f}M")
+                k3.metric("Avg rent / sq ft", f"${lv['rent_per_sqft'].mean():.2f}" if len(lv) else "—")
+                k4.metric("Total sq ft", f"{lv['sq_footage'].sum()/1e6:.2f}M")
+                st.dataframe(
+                    lv.sort_values("annual_rent", ascending=False),
+                    use_container_width=True, hide_index=True,
+                )
+                if st.button("↻ Refresh from Databricks", key="dbx_refresh", type="secondary"):
+                    load_lease_transactions.clear()
+                    st.rerun()
+        except Exception as e:
+            st.error(f"Databricks query failed: {e}")
+            st.caption("If the warehouse has been idle, it may need a moment (or a manual restart) before queries succeed.")
+
+    with sub_sec:
         st.markdown("#### SEC EDGAR — Prologis (NYSE: PLD)")
-        sec_path = Path(__file__).parent.parent / "data" / "sec" / "prologis_financials.json"
-        if sec_path.exists():
-            data = json.loads(sec_path.read_text())
+        st.caption("Real figures from the SEC XBRL Company Facts API, cached in `data/sec/`. Queried by `query_sec_edgar`.")
+        data = load_json(str(SEC_PATH))
+        if data:
             rows = []
             for name, m in data.get("metrics", {}).items():
                 latest = m.get("latest_annual") or {}
+                quarterly = m.get("latest_quarterly") or {}
                 rows.append({
                     "Metric": name,
-                    "Value (USD)": f"${latest.get('val', 0):,}",
-                    "FY End": latest.get("end", "—"),
+                    "Latest annual (USD)": f"${latest.get('val', 0):,}",
+                    "FY end": latest.get("end", "—"),
                     "Form": latest.get("form", "—"),
+                    "Latest quarterly (USD)": f"${quarterly.get('val', 0):,}" if quarterly else "—",
+                    "Quarter end": quarterly.get("end", "—") if quarterly else "—",
                 })
             st.table(rows)
             with st.expander("View raw JSON"):
@@ -443,19 +810,22 @@ with tab_data:
         else:
             st.warning("Run `python scripts/fetch_sec.py` to populate SEC data.")
 
-    with sub3:
+    with sub_pr:
         st.markdown("#### Recent Press Releases")
-        pr_path = Path(__file__).parent.parent / "data" / "press_releases.json"
-        if pr_path.exists():
-            releases = json.loads(pr_path.read_text())
+        st.caption("Mocked releases in `data/press_releases.json`. Queried by `query_press_releases`; "
+                   "summaries go through AWS Bedrock (Claude Haiku 4.5).")
+        releases = load_json(str(PRESS_PATH))
+        if releases:
             categories = sorted(set(r["category"] for r in releases))
-            cat_filter = st.multiselect("Filter by category", options=categories)
+            cat_filter = st.multiselect("Filter by category", options=categories, key="pr_cat")
             filtered = [r for r in releases if not cat_filter or r["category"] in cat_filter]
             st.caption(f"Showing {len(filtered)} of {len(releases)} releases")
             for pr in filtered:
                 with st.expander(f"📰 {pr['date']} — {pr['title']}"):
                     st.markdown(f"**Category:** `{pr['category']}`")
-                    st.markdown(pr["content"])
+                    st.markdown(safe_md(pr["content"]))
+        else:
+            st.warning("Press releases file not found.")
 
 
 # ============================================================
@@ -480,7 +850,7 @@ with tab_ml:
         latitude = st.slider("Latitude", 32.0, 42.0, 34.0)
         longitude = st.slider("Longitude", -125.0, -114.0, -118.0)
 
-        if st.button("🎯 Predict House Value", key="reg_btn", use_container_width=True):
+        if st.button("🎯 Predict House Value", key="reg_btn", use_container_width=True, type="primary"):
             payload = {
                 "MedInc": med_inc, "HouseAge": house_age,
                 "AveRooms": avg_rooms, "AveBedrms": avg_bedrms,
@@ -529,7 +899,7 @@ with tab_ml:
         pdays = st.number_input("Days since last contact (-1 = never)", -1, 1000, -1)
         previous = st.number_input("# contacts before this campaign", 0, 50, 0)
 
-        if st.button("🎯 Predict Subscription", key="clf_btn", use_container_width=True):
+        if st.button("🎯 Predict Subscription", key="clf_btn", use_container_width=True, type="primary"):
             payload = {
                 "age": age, "job": job, "marital": marital, "education": education,
                 "default": default, "housing": housing, "loan": loan,

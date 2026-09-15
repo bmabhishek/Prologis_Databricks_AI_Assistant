@@ -416,8 +416,8 @@ The app has three tabs:
 
 | Tab | What it does |
 | --- | --- |
-| **Chat** | Natural-language Q&A backed by the Vertex AI agent |
-| **Data** | Properties (Postgres dataframe with metro / type filters), SEC Filings (latest annual values), Press Releases (expandable list with category filter) |
+| **Chat** | Natural-language Q&A backed by the Vertex AI agent — with an architecture / data-source overview, clickable suggested queries grouped by source (Databricks, Postgres, SEC EDGAR, press releases + Bedrock, multi-source), and per-answer source chips + tool-call inspector |
+| **Data** | Properties (Postgres dataframe with metro / type filters), Lease Transactions (Databricks dataframe with metro / industry / lease-type filters and rent KPIs), SEC Filings (latest annual + quarterly values), Press Releases (expandable list with category filter) |
 | **ML Predictions** | Sliders / dropdowns that POST to the live SageMaker endpoints and display predictions in real time |
 
 <img width="462" height="644" alt="Prologis Financial Assistant app screenshot" src="https://github.com/user-attachments/assets/2533353d-e3ee-47a6-8910-f0fa3428cbf7" />
