@@ -114,6 +114,7 @@ Prologis_Databricks_AI_Assistant/
 ├── agent/
 │   ├── tools.py            # 4 data-source tools exposed to the agent
 │   ├── bedrock.py          # AWS Bedrock summarization helper
+│   ├── warehouse.py        # Databricks SQL Warehouse status / wake-up (REST API)
 │   └── agent.py            # Vertex AI agent with function calling
 ├── app/
 │   └── streamlit_app.py    # 3-tab Streamlit frontend
@@ -416,7 +417,7 @@ The app has three tabs:
 
 | Tab | What it does |
 | --- | --- |
-| **Chat** | Natural-language Q&A backed by the Vertex AI agent — with an architecture / data-source overview, clickable suggested queries grouped by source (Databricks, Postgres, SEC EDGAR, press releases + Bedrock, multi-source), and per-answer source chips + tool-call inspector |
+| **Chat** | Natural-language Q&A backed by the Vertex AI agent — with an architecture / data-source overview, clickable suggested queries in tabs per source (Databricks, Postgres, SEC EDGAR, press releases + Bedrock, multi-source), a Databricks warehouse status / wake-up control, and per-answer source chips + tool-call inspector |
 | **Data** | Properties (Postgres dataframe with metro / type filters), Lease Transactions (Databricks dataframe with metro / industry / lease-type filters and rent KPIs), SEC Filings (latest annual + quarterly values), Press Releases (expandable list with category filter) |
 | **ML Predictions** | Sliders / dropdowns that POST to the live SageMaker endpoints and display predictions in real time |
 
@@ -449,4 +450,4 @@ The cross-cloud design is functional, not just decorative: queries that need a p
 - Bedrock model availability is region-specific; the project uses the `us-east-1` cross-region inference profile for Claude Haiku 4.5
 - Supabase's free-tier projects auto-pause after a period of inactivity; if the Postgres connection starts failing after the project has sat idle, check the Supabase dashboard for a paused project before assuming a code or credentials issue
 - Google periodically deprecates older Gemini model versions ahead of announced shutdown dates; if the agent starts returning 404s, check `GEMINI_MODEL_NAME` against Google's currently supported model list
-- Databricks Free Edition SQL Warehouses may need to be manually restarted if idle for an extended period; if `query_databricks` calls start timing out, check the warehouse's status in the Databricks console before assuming a code issue
+- Serverless SQL Warehouses auto-stop after ~10 minutes idle, and the first query against a stopped warehouse blocks until it has started. The app's sidebar (and the Databricks sections of the Chat and Data tabs) shows the live warehouse state via the SQL Warehouses REST API with **Check status** / **Wake up** controls (`agent/warehouse.py`); the Data tab holds off loading the lease table while the warehouse is cold. If `query_databricks` calls still time out, check the warehouse in the Databricks console before assuming a code issue

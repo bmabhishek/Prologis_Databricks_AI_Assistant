@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import os
 import json
 import html
+import time
 import traceback
 import streamlit as st
 import pandas as pd
@@ -311,6 +312,25 @@ st.markdown("""
         border-color: rgba(129, 140, 248, 0.3) !important;
         box-shadow: 0 0 20px rgba(99, 102, 241, 0.15);
     }
+    .stTabs [data-baseweb="tab-highlight"] {
+        background: linear-gradient(90deg, #6366f1 0%, #22d3ee 100%);
+        height: 3px;
+        border-radius: 3px 3px 0 0;
+    }
+    .stTabs [data-baseweb="tab-border"] { background: rgba(148, 163, 184, 0.15); }
+    /* Nested tab strips (suggestion groups, data sources): denser, and wrap instead of clipping */
+    .stTabs .stTabs [data-baseweb="tab-list"] { flex-wrap: wrap; row-gap: 4px; }
+    .stTabs .stTabs [data-baseweb="tab"] { height: 40px; padding: 0 14px; font-size: 0.86rem; }
+
+    /* Warehouse status pill */
+    .wh { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: #cbd5e1; }
+    .wh .pill {
+        display: inline-flex; align-items: center; gap: 0.3rem;
+        font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; font-weight: 600;
+        border-radius: 999px; padding: 0.15rem 0.6rem;
+        border: 1px solid var(--c); color: var(--c); background: rgba(255,255,255,0.03);
+    }
+    .wh .meta { color: #94a3b8; font-size: 0.74rem; }
 
     /* Chat messages */
     [data-testid="stChatMessage"] {
@@ -610,6 +630,121 @@ def run_query(prompt: str):
 
 
 # --------------------------------------------------------------
+# Databricks SQL Warehouse status / wake-up
+# --------------------------------------------------------------
+WH_COLORS = {"RUNNING": "#34d399", "STARTING": "#fbbf24", "STOPPED": "#94a3b8",
+             "STOPPING": "#fb923c", "ERROR": "#f87171"}
+DATABRICKS_CONFIGURED = env_set("DATABRICKS_SERVER_HOSTNAME", "DATABRICKS_HTTP_PATH", "DATABRICKS_ACCESS_TOKEN")
+
+
+def refresh_warehouse_status() -> dict:
+    """Query the warehouse state and stash it in session_state."""
+    try:
+        from agent.warehouse import get_warehouse_status
+        status = get_warehouse_status()
+    except Exception as e:
+        status = {"state": "ERROR", "error": str(e), "checked_at": time.time()}
+    st.session_state.wh_status = status
+    return status
+
+
+def warehouse_status() -> dict:
+    """Cached-per-session status; checked once on first load."""
+    if not DATABRICKS_CONFIGURED:
+        return {"state": "UNCONFIGURED"}
+    if "wh_status" not in st.session_state:
+        refresh_warehouse_status()
+    return st.session_state.wh_status
+
+
+def wake_warehouse_ui(key: str):
+    """Start the warehouse with live progress, then rerun with fresh status."""
+    from agent.warehouse import wake_warehouse
+    progress = st.empty()
+
+    def on_update(status):
+        note = status.get("note")
+        progress.caption(f"⏳ {note}" if note else f"⏳ Warehouse state: **{status.get('state')}** — waiting…")
+
+    try:
+        with st.spinner("Waking the Databricks SQL Warehouse…"):
+            status = wake_warehouse(on_update=on_update)
+        st.session_state.wh_status = status
+        st.session_state.wh_last_wake = time.time()
+        if status.get("state") == "RUNNING":
+            st.toast("🧱 Databricks warehouse is running", icon="✅")
+        else:
+            st.toast(f"Warehouse is {status.get('state')} — try again in a moment", icon="⚠️")
+    except Exception as e:
+        st.session_state.wh_status = {"state": "ERROR", "error": str(e), "checked_at": time.time()}
+        st.toast(f"Wake-up failed: {e}", icon="❌")
+    progress.empty()
+    st.rerun()
+
+
+def render_warehouse_panel(key: str, compact: bool = False):
+    """Status pill + Check / Wake buttons. `key` must be unique per placement."""
+    status = warehouse_status()
+    state = status.get("state", "UNKNOWN")
+    if state == "UNCONFIGURED":
+        st.caption("🧱 Databricks credentials not set — warehouse status unavailable.")
+        return
+    from agent.warehouse import STATE_DISPLAY
+    icon, label = STATE_DISPLAY.get(state, ("🔴", state.title() if state != "ERROR" else "Error"))
+    color = WH_COLORS.get(state, "#f87171")
+
+    meta = []
+    if status.get("name"):
+        meta.append(html.escape(status["name"]))
+    if status.get("serverless"):
+        meta.append("Serverless")
+    if status.get("size"):
+        meta.append(html.escape(str(status["size"])))
+    if status.get("auto_stop_mins"):
+        meta.append(f"auto-stop {status['auto_stop_mins']} min")
+    if status.get("checked_at"):
+        age = int(time.time() - status["checked_at"])
+        meta.append("checked just now" if age < 5 else f"checked {age}s ago")
+    if status.get("url"):
+        meta.append(f'<a href="{html.escape(status["url"])}" target="_blank" style="color:#94a3b8">open ↗</a>')
+
+    pill_html = (
+        f'<div class="wh"><span class="pill" style="--c:{color}">{icon} {html.escape(label.upper())}</span>'
+        + (f'<span class="meta">{" · ".join(meta)}</span>' if meta and not compact else "")
+        + "</div>"
+    )
+    hint = None
+    if state == "ERROR":
+        hint = f"⚠️ {status.get('error', 'unknown error')}"
+    elif state == "STOPPED":
+        hint = "Asleep — the first Databricks query will wait for start-up (often 30–90 s). Wake it now to avoid the delay."
+    elif state == "STARTING":
+        hint = "Starting — Databricks queries will run once it reaches RUNNING."
+
+    # Compact: pill + buttons on one row. Full: pill/meta on top, buttons below.
+    if compact:
+        c0, c1, c2 = st.columns([3.2, 1.1, 1.1], vertical_alignment="center")
+        with c0:
+            st.markdown(pill_html + (f'<div class="wh meta">{html.escape(hint)}</div>' if hint else ""),
+                        unsafe_allow_html=True)
+    else:
+        st.markdown(pill_html, unsafe_allow_html=True)
+        if hint:
+            st.caption(hint)
+        c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🔄 Check status", key=f"{key}_check", use_container_width=True, type="secondary"):
+            refresh_warehouse_status()
+            st.rerun()
+    with c2:
+        wake_label = "✅ Awake" if state == "RUNNING" else "⚡ Wake up"
+        if st.button(wake_label, key=f"{key}_wake", use_container_width=True,
+                     type="secondary" if state == "RUNNING" else "primary",
+                     disabled=(state == "RUNNING")):
+            wake_warehouse_ui(key)
+
+
+# --------------------------------------------------------------
 # Sidebar
 # --------------------------------------------------------------
 with st.sidebar:
@@ -652,6 +787,10 @@ with st.sidebar:
         "</div>",
         unsafe_allow_html=True,
     )
+
+    st.divider()
+    st.markdown("### 🧱 Databricks Warehouse")
+    render_warehouse_panel(key="sb_wh")
 
     st.divider()
     st.markdown("### 🚀 ML Endpoints")
@@ -751,19 +890,18 @@ with tab_chat:
         run_query(user_input)
 
     # ---- Suggested queries — always visible, click to run ----
-    st.markdown("##### 💡 Suggested queries — click one to run it")
-    group = st.radio(
-        "Suggestion group",
-        options=list(SUGGESTED_QUERIES.keys()),
-        horizontal=True,
-        label_visibility="collapsed",
-        key="suggestion_group",
-    )
-    sug_cols = st.columns(2)
-    for i, q in enumerate(SUGGESTED_QUERIES[group]):
-        with sug_cols[i % 2]:
-            if st.button(q, key=f"sug_{group}_{i}", use_container_width=True, type="secondary"):
-                run_query(q)
+    st.markdown("##### 💡 Suggested queries — pick a data source, click a question to run it")
+    sug_tabs = st.tabs(list(SUGGESTED_QUERIES.keys()))
+    for tab, (group, queries) in zip(sug_tabs, SUGGESTED_QUERIES.items()):
+        with tab:
+            if group.startswith("🧱") or group.startswith("🔀"):
+                # These hit the Databricks warehouse — surface its state right here.
+                render_warehouse_panel(key=f"sug_wh_{group[:2]}", compact=True)
+            sug_cols = st.columns(2)
+            for i, q in enumerate(queries):
+                with sug_cols[i % 2]:
+                    if st.button(q, key=f"sug_{group}_{i}", use_container_width=True, type="secondary"):
+                        run_query(q)
 
     # ---- Conversation (newest first) ----
     if st.session_state.messages:
@@ -847,10 +985,25 @@ with tab_data:
         st.markdown("#### Lease Transactions (Databricks SQL Warehouse)")
         st.caption(f"`{DATABRICKS_TABLE}` — Delta table on a Serverless SQL Warehouse. Queried by `query_databricks` "
                    f"and by the **{GENIE_SPACE}** Genie space.")
+        render_warehouse_panel(key="data_wh")
+        wh_state = warehouse_status().get("state")
+        # A cold warehouse makes the first query block for a minute or more, so
+        # don't auto-load the table until it is running (or the user insists).
+        warehouse_cold = wh_state in ("STOPPED", "STARTING", "STOPPING")
         try:
-            with st.spinner("Querying Databricks SQL Warehouse…"):
-                leases = load_lease_transactions()
-            if leases.empty:
+            if warehouse_cold and not st.session_state.get("dbx_force_load"):
+                st.info("The warehouse is not running, so the lease table isn't loaded automatically. "
+                        "Wake it up above, or load anyway and wait for start-up.")
+                if st.button("Load anyway (waits for the warehouse)", key="dbx_force_load_btn", type="secondary"):
+                    st.session_state.dbx_force_load = True
+                    st.rerun()
+                leases = None
+            else:
+                with st.spinner("Querying Databricks SQL Warehouse…"):
+                    leases = load_lease_transactions()
+            if leases is None:
+                pass  # skipped — warehouse cold
+            elif leases.empty:
                 st.warning("The lease_transactions table returned no rows.")
             else:
                 f1, f2, f3 = st.columns(3)
@@ -878,6 +1031,7 @@ with tab_data:
                 )
                 if st.button("↻ Refresh from Databricks", key="dbx_refresh", type="secondary"):
                     load_lease_transactions.clear()
+                    refresh_warehouse_status()
                     st.rerun()
         except Exception as e:
             st.error(f"Databricks query failed: {e}")
