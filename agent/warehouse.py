@@ -50,6 +50,19 @@ def _config() -> tuple[str, str, dict]:
     return host, match.group(1), {"Authorization": f"Bearer {token}"}
 
 
+class WarehouseUnavailable(RuntimeError):
+    """The warehouse is not running and Databricks refused to start it
+    (e.g. Free Edition's daily compute quota). Carries Databricks' message."""
+
+
+def _error_message(resp: requests.Response) -> str:
+    try:
+        body = resp.json()
+        return body.get("message") or body.get("error_code") or resp.text
+    except ValueError:
+        return resp.text or f"HTTP {resp.status_code}"
+
+
 def get_warehouse_status(timeout: float = 10) -> dict:
     """Fetch the warehouse's current state and a few descriptive fields."""
     host, warehouse_id, headers = _config()
@@ -71,10 +84,18 @@ def get_warehouse_status(timeout: float = 10) -> dict:
 
 
 def start_warehouse(timeout: float = 10) -> None:
-    """Ask Databricks to start the warehouse (no-op if already running)."""
+    """Ask Databricks to start the warehouse (no-op if already running).
+
+    Raises WarehouseUnavailable when Databricks refuses (most commonly the
+    Free Edition daily limit: "you have hit your free daily limit"), and
+    requests.HTTPError for auth/permission problems (401/403).
+    """
     host, warehouse_id, headers = _config()
     resp = requests.post(f"https://{host}{WAREHOUSES_API}/{warehouse_id}/start", headers=headers, timeout=timeout)
-    resp.raise_for_status()
+    if resp.status_code in (401, 403):
+        resp.raise_for_status()
+    if not resp.ok:
+        raise WarehouseUnavailable(_error_message(resp))
 
 
 def ping_warehouse() -> float:
@@ -108,9 +129,10 @@ def wake_warehouse(
         try:
             start_warehouse()
         except requests.HTTPError as e:
+            # Token not allowed to call /start — a query starts the warehouse implicitly.
             code = e.response.status_code if e.response is not None else "?"
             if on_update:
-                on_update({**status, "note": f"REST start refused (HTTP {code}); waking via SELECT 1 instead…"})
+                on_update({**status, "note": f"Token may not call /start (HTTP {code}); waking via SELECT 1 instead…"})
             ping_warehouse()
             return get_warehouse_status()
 
@@ -122,7 +144,31 @@ def wake_warehouse(
         if status["state"] == "RUNNING":
             break
         time.sleep(poll_seconds)
+    if status["state"] != "RUNNING":
+        raise WarehouseUnavailable(
+            f"Warehouse is still {status['state']} after {int(max_wait)} s — try again shortly."
+        )
     return status
+
+
+def ensure_warehouse_running(on_update: Optional[Callable[[dict], None]] = None) -> Optional[bool]:
+    """Make sure the warehouse is up before a query.
+
+    Returns True if it had to be woken, False if it was already running, or
+    None if the state could not be checked (the query is then attempted as-is,
+    since the SQL connector starts a warehouse implicitly).
+    Raises WarehouseUnavailable if it is asleep and cannot be started.
+    """
+    try:
+        status = get_warehouse_status()
+    except Exception:
+        return None
+    if status["state"] == "RUNNING":
+        return False
+    if on_update:
+        on_update(status)
+    wake_warehouse(on_update=on_update)
+    return True
 
 
 if __name__ == "__main__":

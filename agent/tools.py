@@ -32,6 +32,48 @@ def _get_engine():
     return create_engine(f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{db}")
 
 
+# Optional callback the UI registers to be told about warehouse wake-ups
+# while a tool call is in flight: hook(message: str, state: str).
+_progress_hook = None
+
+
+def set_progress_hook(hook) -> None:
+    global _progress_hook
+    _progress_hook = hook
+
+
+def _notify(message: str, state: str = "info") -> None:
+    if _progress_hook:
+        try:
+            _progress_hook(message, state)
+        except Exception:
+            pass
+
+
+def _ensure_warehouse_awake() -> None:
+    """Wake the SQL Warehouse before querying it, so a cold warehouse is
+    announced (and started) instead of silently stalling the connection.
+    Raises WarehouseUnavailable if it cannot be started (e.g. daily quota)."""
+    from agent.warehouse import ensure_warehouse_running, STATE_DISPLAY
+
+    def on_update(status):
+        state = status.get("state", "?")
+        note = status.get("note")
+        label = STATE_DISPLAY.get(state, ("", state))[1]
+        if note:
+            _notify(note, state)
+        elif state == "STOPPED":
+            _notify("Databricks SQL Warehouse is asleep — waking it up before running your query…", state)
+        elif state == "RUNNING":
+            _notify("Databricks SQL Warehouse is running — executing query…", state)
+        else:
+            _notify(f"Databricks SQL Warehouse is {label.lower()} — waiting for it to come online…", state)
+
+    woke = ensure_warehouse_running(on_update=on_update)
+    if woke:
+        _notify("Databricks SQL Warehouse is running — executing query…", "RUNNING")
+
+
 def _get_databricks_connection():
     hostname = os.getenv("DATABRICKS_SERVER_HOSTNAME")
     http_path = os.getenv("DATABRICKS_HTTP_PATH")
@@ -138,6 +180,8 @@ def query_databricks(
     Returns:
         {"count": int, "records": [...], "summary": {...}}
     """
+    _ensure_warehouse_awake()
+
     sql = """
         SELECT lease_id, tenant_name, tenant_industry, metro_area,
                sq_footage, lease_start, lease_term_months, rent_per_sqft,

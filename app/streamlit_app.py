@@ -604,12 +604,95 @@ def render_tool_result(result):
     st.json(result, expanded=False)
 
 
-def run_query(prompt: str):
-    """Send a question to the Vertex AI agent and prepend the exchange."""
+# Words that almost always mean the agent will call query_databricks. Used to
+# wake the warehouse *before* the Gemini round-trip; the tool itself is also
+# guarded, so questions this misses still get the wake-up — just a bit later.
+DATABRICKS_HINTS = (
+    "lease", "tenant", "rent", "databricks", "genie", "sq ft", "square foot",
+    "3pl", "cold storage", "e-commerce", "ecommerce", "industry", "industries",
+)
+
+
+def needs_databricks(prompt: str) -> bool:
+    text = prompt.lower()
+    return any(h in text for h in DATABRICKS_HINTS)
+
+
+def run_query(prompt: str, needs_dbx: bool = False):
+    """Send a question to the Vertex AI agent and prepend the exchange.
+
+    If the question needs Databricks and the SQL Warehouse is asleep, wake it
+    first (with visible status) and only then run the agent. If it cannot be
+    woken (e.g. Free Edition daily quota), say so instead of calling the agent.
+    """
+    import agent.tools as agent_tools
+    from agent.warehouse import WarehouseUnavailable, ensure_warehouse_running
+
     prompt = (prompt or "").strip()
     if not prompt:
         return
+
+    status_box = st.empty()
+    wake_started = None
+    wake_note = None
+
+    def show(message: str, state: str = "info"):
+        color = WH_COLORS.get(state, "#818cf8")
+        icon = {"STOPPED": "💤", "STARTING": "⏳", "RUNNING": "✅", "ERROR": "❌"}.get(state, "🧱")
+        status_box.markdown(
+            f'<div class="wh" style="padding:0.6rem 0.9rem;border:1px solid {color};border-radius:10px;'
+            f'background:rgba(255,255,255,0.03)">{icon} <b>Databricks warehouse:</b> {html.escape(message)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    def on_update(status):
+        nonlocal wake_started
+        state = status.get("state", "?")
+        if status.get("note"):
+            show(status["note"], state)
+        elif state == "STOPPED":
+            wake_started = wake_started or time.time()
+            show("asleep — waking it up before running your query…", state)
+        elif state == "RUNNING":
+            show("running — executing your query…", state)
+        else:
+            show(f"{state.lower()} — waiting for it to come online…", state)
+
+    # Progress from inside a tool call (covers questions the heuristic misses).
+    def tool_hook(message: str, state: str):
+        nonlocal wake_note
+        if state == "STOPPED" and not wake_note:
+            wake_note = "🧱 The Databricks SQL Warehouse was asleep — the agent woke it before querying."
+        show(message, state)
+
+    agent_tools.set_progress_hook(tool_hook)
     try:
+        if DATABRICKS_CONFIGURED and (needs_dbx or needs_databricks(prompt)):
+            try:
+                woke = ensure_warehouse_running(on_update=on_update)
+                if woke:
+                    secs = int(time.time() - (wake_started or time.time()))
+                    wake_note = f"🧱 The Databricks SQL Warehouse was asleep — woke it in ~{secs} s before running this query."
+                    refresh_warehouse_status()
+            except WarehouseUnavailable as e:
+                refresh_warehouse_status()
+                st.session_state.wh_status = {**st.session_state.wh_status, "state": "ERROR", "error": str(e)}
+                st.session_state.messages.insert(0, {
+                    "user": prompt,
+                    "assistant": (
+                        "💤 **The Databricks SQL Warehouse is asleep and could not be started**, so this "
+                        "question was not sent to the agent.\n\n"
+                        f"Databricks said: _{safe_md(str(e))}_\n\n"
+                        "Questions about properties (Postgres), SEC filings, and press releases still work; "
+                        "retry Databricks questions once the warehouse can be started."
+                    ),
+                    "tool_calls": [],
+                })
+                status_box.empty()
+                st.session_state.input_counter += 1
+                st.rerun()
+                return
+
         from agent.agent import run_agent
         with st.spinner("Routing through Vertex AI Gemini…"):
             result = run_agent(prompt)
@@ -617,6 +700,7 @@ def run_query(prompt: str):
             "user": prompt,
             "assistant": result["answer"],
             "tool_calls": result["tool_calls"],
+            "wake_note": wake_note,
         })
     except Exception as e:
         st.session_state.messages.insert(0, {
@@ -625,6 +709,9 @@ def run_query(prompt: str):
             "tool_calls": [],
             "traceback": traceback.format_exc(),
         })
+    finally:
+        agent_tools.set_progress_hook(None)
+        status_box.empty()
     st.session_state.input_counter += 1
     st.rerun()
 
@@ -897,11 +984,12 @@ with tab_chat:
             if group.startswith("🧱") or group.startswith("🔀"):
                 # These hit the Databricks warehouse — surface its state right here.
                 render_warehouse_panel(key=f"sug_wh_{group[:2]}", compact=True)
+            hits_databricks = group.startswith("🧱") or group.startswith("🔀")
             sug_cols = st.columns(2)
             for i, q in enumerate(queries):
                 with sug_cols[i % 2]:
                     if st.button(q, key=f"sug_{group}_{i}", use_container_width=True, type="secondary"):
-                        run_query(q)
+                        run_query(q, needs_dbx=hits_databricks)
 
     # ---- Conversation (newest first) ----
     if st.session_state.messages:
@@ -923,6 +1011,8 @@ with tab_chat:
                 st.markdown('<div class="chips">' + "".join(source_chip(c["name"]) for c in calls) + "</div>",
                             unsafe_allow_html=True)
             st.markdown(safe_md(msg["assistant"]))
+            if msg.get("wake_note"):
+                st.caption(msg["wake_note"])
             if calls:
                 with st.expander(f"🔧 {len(calls)} tool call(s) — what the agent fetched"):
                     for c in calls:
