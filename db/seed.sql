@@ -6,7 +6,7 @@ INSERT INTO properties (address, metro_area, sq_footage, property_type) VALUES
 ('2200 E Carson St, Long Beach', 'Los Angeles', 380000, 'Industrial'),
 ('5400 W Roosevelt Rd, Cicero', 'Chicago',     620000, 'Industrial'),
 ('1701 Cornell Ave, Melrose Park', 'Chicago',  295000, 'Logistics'),
-('8800 Bryn Mawr Ave, Chicago', 'Chicago',     510000, 'Industrial'),
+('8800 Bryn Mawr Ave, Chicago', 'Chicago',    https://teams.microsoft.com/dl/launcher/launcher.html?url=%2F_%23%2Fmeet%2F263208226965026%3Fp%3DqXlyAUySkoTSIVSWmT%26anon%3Dtrue&type=meet&deeplinkId=95022a6f-0dcf-43f6-860f-7a14982fe6aa&directDl=true&msLaunch=true&enableMobilePage=true&suppressPrompt=true 510000, 'Industrial'),
 ('3500 Bayshore Rd, Edison', 'New York',       415000, 'Logistics'),
 ('200 Middlesex Ave, Carteret', 'New York',    540000, 'Industrial'),
 ('1600 Westport Rd, Kansas City', 'Kansas City', 280000, 'Warehouse'),
